@@ -8,6 +8,7 @@ RUN tar zxvf flyway-commandline-11.3.1-linux-x64.tar.gz
 RUN ln -s /flyway-11.3.1/flyway /usr/bin/flyway
 RUN ls -l /usr/bin/flyway
 RUN apt install sudo -y
+RUN apt install neovim -y
 COPY flyway.toml /flyway.toml
 COPY migrations /migrations
 COPY docker-entrypoint.sh /docker-entrypoint.sh
