@@ -1,0 +1,10 @@
+
+[flyway]
+locations = ["filesystem:/migrations"]
+
+
+[environments.default]
+locations = ["filesystem:/migrations"]
+url = "jdbc:postgresql://localhost:5432/mydb"
+user = "admin"
+password = "letmein"
