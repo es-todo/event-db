@@ -22,7 +22,7 @@ COPY ./package.json /app
 COPY ./package-lock.json /app
 RUN npm install
 COPY ./tsconfig.json /app
-COPY ./src /app
+COPY ./src /app/src
 RUN npm run check
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
