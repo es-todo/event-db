@@ -21,7 +21,6 @@ echo "Postgresql started."
 
 ls ./src
 ./node_modules/.bin/nodemon --ext ts --watch src --exec 'node ./src/main.ts' &
-NODEPID = $!
 
 sleep infinity &
 wait $!

@@ -6,10 +6,13 @@
     "check": "tsc --noEmit",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "type": "module",
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@types/express": "^5.0.0",
+    "express": "^4.21.2",
     "nodemon": "^3.1.9",
     "typescript": "^5.7.3"
   }
