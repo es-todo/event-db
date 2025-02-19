@@ -30,7 +30,7 @@ app.post("/event-apis/submit-command", async (req, res) => {
   const { command_uuid, command_type, command_data } = req.body;
   console.log({ command_uuid, command_type, command_data });
   try {
-    const outcome = await pool.query("select enqueue_command($1,$2,$3)", [
+    await pool.query("select enqueue_command($1,$2,$3)", [
       command_uuid,
       command_type,
       command_data,
@@ -43,6 +43,18 @@ app.post("/event-apis/submit-command", async (req, res) => {
       console.error(error);
       res.status(500).send("could not insert command");
     }
+  }
+});
+
+app.get("/event-apis/pending-commands", async (req, res) => {
+  try {
+    const outcome = await pool.query(
+      "select * from command_queue natural join command"
+    );
+    res.status(200).json(outcome.rows);
+  } catch (error: any) {
+    console.error(error);
+    res.status(500).send("failed");
   }
 });
 
