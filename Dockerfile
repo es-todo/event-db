@@ -13,11 +13,12 @@ RUN wget https://deb.nodesource.com/setup_23.x
 RUN sudo -E bash setup_23.x
 RUN sudo apt-get install nodejs -y
 
-COPY flyway.toml /flyway.toml
-COPY migrations /migrations
-
 RUN mkdir /app
 WORKDIR /app
+
+COPY flyway.toml /app/flyway.toml
+COPY migrations /app/migrations
+
 COPY ./package.json /app
 COPY ./package-lock.json /app
 RUN npm ci

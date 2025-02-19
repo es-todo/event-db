@@ -1,10 +1,10 @@
 
 [flyway]
-locations = ["filesystem:/migrations"]
+locations = ["filesystem:/app/migrations"]
 
 
 [environments.default]
-locations = ["filesystem:/migrations"]
-url = "jdbc:postgresql://localhost:5432/mydb"
+locations = ["filesystem:/app/migrations"]
+url = "jdbc:postgresql://localhost:5432/eventdb"
 user = "admin"
 password = "letmein"

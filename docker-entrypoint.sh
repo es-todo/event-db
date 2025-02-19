@@ -12,7 +12,7 @@ trap do_exit SIGTERM SIGINT SIGHUP
 
 sudo -u postgres psql <<EOF
 create user admin password 'letmein';
-create database mydb with owner = admin;
+create database eventdb with owner = admin;
 EOF
 
 flyway migrate

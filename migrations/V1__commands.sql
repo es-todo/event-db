@@ -48,7 +48,7 @@ returns void as $$
   begin
     insert into command_outcome (command_outcome_t, command_uuid, outcome, reason) 
       values (
-        coalesce((select max(command_outcome_t) from command_outcome), 1), 
+        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
         command_uuid, 
         'failed',
         reason
@@ -63,7 +63,7 @@ returns void as $$
   begin
     insert into command_outcome (command_outcome_t, command_uuid, outcome, reason) 
       values (
-        coalesce((select max(command_outcome_t) from command_outcome), 1), 
+        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
         command_uuid, 
         'failed',
         reason
@@ -81,7 +81,7 @@ returns void as $$
     end if;
     insert into command_outcome (command_outcome_t, command_uuid, outcome) 
       values (
-        coalesce((select max(command_outcome_t) from command_outcome), 1), 
+        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
         command_uuid, 
         'succeeded'
       );
