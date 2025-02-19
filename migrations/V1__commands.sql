@@ -39,7 +39,7 @@ returns void as $$
       values (command_uuid, command_type, command_data);
     insert into command_queue (command_uuid)
       values (command_uuid);
-    perform pgnotify('command_stream', concat('queued:', command_uuid));
+    perform pg_notify('command_stream', concat('queued:', command_uuid));
   end;
 $$ language plpgsql;
 
@@ -54,7 +54,7 @@ returns void as $$
         reason
       );
     delete from command_queue T where T.command_uuid = command_uuid;
-    perform pgnotify('command_stream', concat('failed:', command_uuid));
+    perform pg_notify('command_stream', concat('failed:', command_uuid));
   end;
 $$ language plpgsql;
 
@@ -69,7 +69,7 @@ returns void as $$
         reason
       );
     delete from command_queue T where T.command_uuid = command_uuid;
-    perform pgnotify('command_stream', concat('aborted:', command_uuid));
+    perform pg_notify('command_stream', concat('aborted:', command_uuid));
   end;
 $$ language plpgsql;
 
@@ -86,10 +86,10 @@ returns void as $$
         'succeeded'
       );
     delete from command_queue T where T.command_uuid = command_uuid;
-    perform pgnotify('command_stream', concat('succeeded:', command_uuid));
+    perform pg_notify('command_stream', concat('succeeded:', command_uuid));
     insert into event (event_t, event_data, command_uuid)
       values (event_t, event_data, command_uuid);
-    perform pgnotify('event_stream', event_t);
+    perform pg_notify('event_stream', event_t);
   end;
 $$ language plpgsql;
 
