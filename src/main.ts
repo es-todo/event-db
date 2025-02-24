@@ -46,10 +46,26 @@ app.post("/event-apis/submit-command", async (req, res) => {
   }
 });
 
-app.get("/event-apis/pending-commands", async (req, res) => {
+app.post("/event-apis/fail-command", async (req, res) => {
+  const { command_uuid, reason } = req.body;
+  console.log({ command_uuid, reason });
+  try {
+    await pool.query("select fail_command($1,$2)", [command_uuid, reason]);
+    res.status(200).send("ok");
+  } catch (error: any) {
+    if (error.constraint === "command_outcome_pkey") {
+      res.status(202).send("already processed");
+    } else {
+      console.error(error);
+      res.status(500).send("could not insert command");
+    }
+  }
+});
+
+app.get("/event-apis/pending-commands", async (_req, res) => {
   try {
     const outcome = await pool.query(
-      "select * from command_queue natural join command"
+      "select * from command_queue join command on command_queue.command_uuid = command.command_uuid"
     );
     res.status(200).json(outcome.rows);
   } catch (error: any) {
@@ -57,6 +73,194 @@ app.get("/event-apis/pending-commands", async (req, res) => {
     res.status(500).send("failed");
   }
 });
+
+let event_t: number | undefined = undefined;
+const event_t_waiters: Array<(event_t: number) => void> = [];
+
+function get_event_t(): Promise<number> {
+  if (event_t === undefined) {
+    return new Promise((resolve) => event_t_waiters.push(resolve));
+  } else {
+    return Promise.resolve(event_t);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function init_event_t() {
+  const t = await (async () => {
+    try {
+      const outcome = await pool.query(
+        "select coalesce(max(event_t), 0) as t from event"
+      );
+      return parseInt(outcome.rows[0].t);
+    } catch (error: any) {
+      console.error("failed to init event_t");
+      console.error(error);
+    }
+  })();
+  if (t === undefined) {
+    if (event_t === undefined) {
+      await sleep(1000);
+      return init_event_t();
+    }
+  } else {
+    if (event_t === undefined) {
+      event_t = t;
+      event_t_waiters.forEach((f) => f(t));
+      event_t_waiters.splice(0, event_t_waiters.length);
+    }
+  }
+}
+
+app.get("/event-apis/event-t", async (_req, res) => {
+  res.status(200).json(await get_event_t());
+});
+
+type queue_entry = {
+  command_uuid: string;
+  scheduled_for: Date;
+  command_type: string;
+  command_data: any;
+  command_date: Date;
+};
+
+type command_message = {
+  type: "queued" | "succeeded" | "failed" | "aborted";
+  queue_t: number;
+  command_uuid: string;
+};
+
+function parse_command_payload(payload: string): command_message {
+  const m = payload.split(":");
+  if (m.length !== 3) throw new Error(`invalid payload ${payload}`);
+  const [queue_t, type, command_uuid] = m;
+  if (
+    type === "queued" ||
+    type === "succeeded" ||
+    type === "failed" ||
+    type === "aborted"
+  ) {
+    return { queue_t: parseInt(queue_t), type, command_uuid };
+  } else {
+    throw new Error(`invalid payload ${payload}`);
+  }
+}
+
+class CommandQueue {
+  private queue_t: number | undefined = undefined;
+  private queue_t_waiters: Set<(queue_t: number) => void> = new Set();
+  private queue_t_pollers: Map<number, Set<() => void>> = new Map();
+
+  public add_message(message: command_message) {
+    this.advance_to(message.queue_t);
+  }
+
+  public advance_to(queue_t: number) {
+    if (this.queue_t === undefined) {
+      this.queue_t = queue_t;
+      this.queue_t_waiters.forEach((f) => f(queue_t));
+      this.queue_t_waiters.clear();
+    } else if (queue_t > this.queue_t) {
+      this.queue_t = queue_t;
+    }
+    for (const t of this.queue_t_pollers.keys()) {
+      if (t <= queue_t) {
+        const s = this.queue_t_pollers.get(t);
+        s?.forEach((f) => f());
+        this.queue_t_pollers.delete(t);
+      }
+    }
+  }
+
+  public get_queue_t(): Promise<number> {
+    if (this.queue_t === undefined) {
+      return new Promise((resolve) => this.queue_t_waiters.add(resolve));
+    } else {
+      return Promise.resolve(this.queue_t);
+    }
+  }
+
+  public poll_queue(t: number): Promise<void> {
+    if (this.queue_t && t <= this.queue_t) {
+      return Promise.resolve();
+    } else {
+      return new Promise((resolve) => {
+        const s =
+          this.queue_t_pollers.get(t) ??
+          ((s: Set<() => void>) => {
+            this.queue_t_pollers.set(t, s);
+            return s;
+          })(new Set());
+        s.add(resolve);
+      });
+    }
+  }
+}
+
+const command_queue = new CommandQueue();
+
+async function init_queue() {
+  while (true) {
+    try {
+      const conn = await pool.connect();
+      try {
+        const p = new Promise(async (resolve, reject) => {
+          conn.on("error", (error) => reject(error));
+          conn.on("end", () => reject(new Error("connection ended")));
+          conn.on("notification", ({ payload }) => {
+            if (!payload) return reject(new Error("no payload"));
+            const message = parse_command_payload(payload);
+            command_queue.add_message(message);
+          });
+          try {
+            await conn.query("listen command_stream");
+            const res = await conn.query(
+              "select coalesce(max(queue_t), 0) as t from command_queue_tracker"
+            );
+            const t = parseInt(res.rows[0].t);
+            command_queue.advance_to(t);
+          } catch (error: any) {
+            reject(error);
+          }
+        });
+        await p;
+      } catch (error: any) {
+        console.error(error);
+        conn.removeAllListeners();
+        conn.release(error);
+      }
+    } catch (error) {
+      console.error(error);
+      await sleep(1000);
+    }
+  }
+}
+
+app.get("/event-apis/queue-t", async (_req, res) => {
+  res.status(200).json(await command_queue.get_queue_t());
+});
+
+app.get("/event-apis/poll-command-queue", async (req, res) => {
+  const queue_t_str =
+    typeof req.query["queue_t"] === "string" ? req.query["queue_t"] : "";
+  if (!queue_t_str.match(/^\d+$/)) {
+    res.status(404).send("invalid queue_t");
+    return;
+  }
+  const queue_t = parseInt(queue_t_str);
+  if (Number.isNaN(queue_t) || queue_t > Number.MAX_SAFE_INTEGER) {
+    res.status(404).send("invalid queue_t");
+    return;
+  }
+  res.status(200).json(await command_queue.poll_queue(queue_t));
+});
+
+init_event_t();
+
+init_queue();
 
 app.listen(port, () => {
   console.log(`events server listening on port ${port}`);
