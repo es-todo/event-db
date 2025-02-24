@@ -62,6 +62,28 @@ app.post("/event-apis/fail-command", async (req, res) => {
   }
 });
 
+app.post("/event-apis/succeed-command", async (req, res) => {
+  const { command_uuid, event_t, events } = req.body;
+  console.log({ command_uuid, event_t, events });
+  try {
+    await pool.query("select succeed_command($1,$2,$3)", [
+      command_uuid,
+      event_t,
+      JSON.stringify(events),
+    ]);
+    res.status(200).send("ok");
+  } catch (error: any) {
+    if (String(error) === "error: invalid_event_t") {
+      res.status(409).send("reprocess");
+    } else if (error.constraint === "command_outcome_pkey") {
+      res.status(202).send("already processed");
+    } else {
+      console.error(String(error));
+      res.status(500).send("could not insert command");
+    }
+  }
+});
+
 app.get("/event-apis/pending-commands", async (_req, res) => {
   try {
     const outcome = await pool.query(

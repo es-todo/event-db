@@ -97,27 +97,27 @@ returns void as $$
   end;
 $$ language plpgsql;
 
-create function succeed_command (command_uuid uuid, event_t bigint, event_data jsonb)
+create function succeed_command (this_command_uuid uuid, this_event_t bigint, this_event_data text)
 returns void as $$
   declare next_queue_t bigint;
   begin
-    if event_t != coalesce((select max(event_t) from event), 0) + 1 then
-      raise exception 'invalid event_t';
+    if this_event_t != coalesce((select max(event_t) from event), 0) + 1 then
+      raise exception 'invalid_event_t';
     end if;
-    insert into command_outcome (command_outcome_t, command_uuid, outcome) 
+    insert into command_outcome (command_outcome_t, command_uuid, outcome)
       values (
         coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
-        command_uuid, 
+        this_command_uuid,
         'succeeded'
       );
-    delete from command_queue T where T.command_uuid = command_uuid;
+    delete from command_queue where command_uuid = this_command_uuid;
     next_queue_t := (select coalesce(max(queue_t), 0) from command_queue_tracker) + 1;
     insert into command_queue_tracker (queue_t, command_uuid, status)
-      values (next_queue_t, command_uuid, 'removed');
-    perform pg_notify('command_stream', concat(next_queue_t, ':succeeded:', command_uuid));
+      values (next_queue_t, this_command_uuid, 'removed');
+    perform pg_notify('command_stream', concat(next_queue_t, ':succeeded:', this_command_uuid));
     insert into event (event_t, event_data, command_uuid)
-      values (event_t, event_data, command_uuid);
-    perform pg_notify('event_stream', event_t);
+      values (this_event_t, this_event_data::jsonb, this_command_uuid);
+    perform pg_notify('event_stream', this_event_t::text);
   end;
 $$ language plpgsql;
 
