@@ -2,6 +2,7 @@ import express from "express";
 import body_parser from "body-parser";
 
 import pg from "pg";
+import assert from "node:assert";
 
 const port = 3000;
 const db_user = "admin";
@@ -65,6 +66,17 @@ app.post("/event-apis/fail-command", async (req, res) => {
 app.post("/event-apis/succeed-command", async (req, res) => {
   const { command_uuid, event_t, events } = req.body;
   console.log({ command_uuid, event_t, events });
+  assert(
+    Array.isArray(events) &&
+      events.every(
+        (x) =>
+          typeof x === "object" &&
+          x !== null &&
+          typeof x.type === "string" &&
+          typeof x.data === "object" &&
+          x.data !== null
+      )
+  );
   try {
     await pool.query("select succeed_command($1,$2,$3)", [
       command_uuid,
@@ -96,58 +108,9 @@ app.get("/event-apis/pending-commands", async (_req, res) => {
   }
 });
 
-let event_t: number | undefined = undefined;
-const event_t_waiters: Array<(event_t: number) => void> = [];
-
-function get_event_t(): Promise<number> {
-  if (event_t === undefined) {
-    return new Promise((resolve) => event_t_waiters.push(resolve));
-  } else {
-    return Promise.resolve(event_t);
-  }
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-async function init_event_t() {
-  const t = await (async () => {
-    try {
-      const outcome = await pool.query(
-        "select coalesce(max(event_t), 0) as t from event"
-      );
-      return parseInt(outcome.rows[0].t);
-    } catch (error: any) {
-      console.error("failed to init event_t");
-      console.error(error);
-    }
-  })();
-  if (t === undefined) {
-    if (event_t === undefined) {
-      await sleep(1000);
-      return init_event_t();
-    }
-  } else {
-    if (event_t === undefined) {
-      event_t = t;
-      event_t_waiters.forEach((f) => f(t));
-      event_t_waiters.splice(0, event_t_waiters.length);
-    }
-  }
-}
-
-app.get("/event-apis/event-t", async (_req, res) => {
-  res.status(200).json(await get_event_t());
-});
-
-type queue_entry = {
-  command_uuid: string;
-  scheduled_for: Date;
-  command_type: string;
-  command_data: any;
-  command_date: Date;
-};
 
 type command_message = {
   type: "queued" | "succeeded" | "failed" | "aborted";
@@ -170,6 +133,144 @@ function parse_command_payload(payload: string): command_message {
     throw new Error(`invalid payload ${payload}`);
   }
 }
+
+type events = { type: string; data: any }[];
+
+async function get_events(event_t: number): Promise<events> {
+  while (true) {
+    try {
+      const res = await pool.query(
+        "select event_data as data from event where event_t = $1",
+        [event_t]
+      );
+      assert(res.rows.length === 1);
+      const events = res.rows[0].data;
+      assert(Array.isArray(events));
+      console.log({ event_t, events });
+      return events;
+    } catch (error) {
+      console.error(error);
+      sleep(100);
+    }
+  }
+}
+
+class EventMonitor {
+  private t: number | undefined = undefined;
+  private waiters: Set<(t: number) => void> = new Set();
+  private pollers: Map<number, Set<(events: events) => void>> = new Map();
+
+  constructor() {
+    this.init();
+  }
+
+  public get_t(): Promise<number> {
+    if (this.t === undefined) {
+      return new Promise((resolve) => this.waiters.add(resolve));
+    } else {
+      return Promise.resolve(this.t);
+    }
+  }
+
+  public wait_events(t: number): Promise<events> {
+    console.log({ t, mine: this.t });
+    if (this.t === undefined || t > this.t) {
+      return new Promise((resolve) => {
+        const s =
+          this.pollers.get(t) ??
+          ((s: Set<(events: events) => void>) => {
+            this.pollers.set(t, s);
+            return s;
+          })(new Set());
+        s.add(resolve);
+      });
+    } else {
+      return get_events(t);
+    }
+  }
+
+  private async dequeue_all(event_t: number, s: Set<(events: events) => void>) {
+    const events = await get_events(event_t);
+    s.forEach((f) => f(events));
+  }
+
+  private note_t(t: number) {
+    console.log({ noting: t });
+    if (this.t === undefined) {
+      this.t = t;
+      this.waiters.forEach((f) => f(t));
+      this.waiters.clear();
+      for (const k of this.pollers.keys()) {
+        if (k <= t) {
+          const s = this.pollers.get(k);
+          assert(s);
+          this.pollers.delete(k);
+          this.dequeue_all(k, s);
+        }
+      }
+    }
+    while (this.t < t) {
+      const s = this.pollers.get(this.t);
+      if (s) {
+        this.pollers.delete(this.t);
+        this.dequeue_all(this.t, s);
+      }
+      this.t += 1;
+    }
+  }
+
+  private async init() {
+    while (true) {
+      try {
+        const conn = await pool.connect();
+        const p = new Promise(async (_resolve, reject) => {
+          conn.on("error", (error) => reject(error));
+          conn.on("end", () => reject(new Error("connection ended")));
+          conn.on("notification", (message) => {
+            assert(message.payload !== undefined);
+            this.note_t(parseInt(message.payload));
+          });
+          try {
+            await conn.query("listen event_stream");
+            const data = await conn.query(
+              "select coalesce(max(event_t), 0) as t from event"
+            );
+            this.note_t(parseInt(data.rows[0].t));
+          } catch (error: any) {
+            conn.removeAllListeners();
+            conn.release(error);
+            reject(error);
+          }
+        });
+        await p;
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  }
+}
+
+const event_monitor = new EventMonitor();
+
+app.get("/event-apis/event-t", async (_req, res) => {
+  res.status(200).json(await event_monitor.get_t());
+});
+
+app.get("/event-apis/get-events", async (req, res) => {
+  const event_t_str = ((s) => (typeof s === "string" ? s : ""))(
+    req.query["event_t"]
+  );
+  if (!event_t_str.match(/^\d+$/)) {
+    res.status(401).send("invalid event_t");
+    return;
+  }
+  const event_t = parseInt(event_t_str);
+  if (Number.isNaN(event_t) || event_t > Number.MAX_SAFE_INTEGER) {
+    res.status(401).send("invalid event_t");
+    return;
+  }
+  res.status(200).json(await event_monitor.wait_events(event_t));
+});
 
 class CommandQueue {
   private queue_t: number | undefined = undefined;
@@ -229,7 +330,7 @@ async function init_queue() {
     try {
       const conn = await pool.connect();
       try {
-        const p = new Promise(async (resolve, reject) => {
+        const p = new Promise(async (_resolve, reject) => {
           conn.on("error", (error) => reject(error));
           conn.on("end", () => reject(new Error("connection ended")));
           conn.on("notification", ({ payload }) => {
@@ -279,8 +380,6 @@ app.get("/event-apis/poll-command-queue", async (req, res) => {
   }
   res.status(200).json(await command_queue.poll_queue(queue_t));
 });
-
-init_event_t();
 
 init_queue();
 
