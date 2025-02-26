@@ -366,19 +366,44 @@ app.get("/event-apis/queue-t", async (_req, res) => {
   res.status(200).json(await command_queue.get_queue_t());
 });
 
-app.get("/event-apis/poll-command-queue", async (req, res) => {
-  const queue_t_str =
-    typeof req.query["queue_t"] === "string" ? req.query["queue_t"] : "";
-  if (!queue_t_str.match(/^\d+$/)) {
-    res.status(404).send("invalid queue_t");
-    return;
+function int_param(x: any) {
+  const str = typeof x === "string" ? x : "";
+  if (str.match(/^\d+$/)) {
+    const n = parseInt(str);
+    if (Number.isNaN(n) || n > Number.MAX_SAFE_INTEGER) {
+      return undefined;
+    }
+    return n;
+  } else {
+    return undefined;
   }
-  const queue_t = parseInt(queue_t_str);
-  if (Number.isNaN(queue_t) || queue_t > Number.MAX_SAFE_INTEGER) {
+}
+
+app.get("/event-apis/poll-command-queue", async (req, res) => {
+  const queue_t = int_param(req.query["queue_t"]);
+  if (queue_t === undefined) {
     res.status(404).send("invalid queue_t");
     return;
   }
   res.status(200).json(await command_queue.poll_queue(queue_t));
+});
+
+app.get("/event-apis/recent-events", async (req, res) => {
+  const limit = int_param(req.query["limit"]);
+  if (limit === undefined) {
+    res.status(404).send("invalid limit");
+    return;
+  }
+  try {
+    const outcome = await pool.query(
+      `select * from event order by event_t desc limit $1`,
+      [limit]
+    );
+    res.status(200).json(outcome.rows);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send("failed");
+  }
 });
 
 init_queue();
