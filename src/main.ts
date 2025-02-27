@@ -4,6 +4,7 @@ import pg from "pg";
 import assert from "node:assert";
 
 import { EventMonitor } from "./event-monitor.ts";
+import { sleep } from "./sleep.ts";
 
 const port = 3000;
 const db_user = "admin";
@@ -30,7 +31,9 @@ app.get("/", async (_req, res) => {
 
 app.post("/event-apis/submit-command", async (req, res) => {
   const { command_uuid, command_type, command_data } = req.body;
-  console.log({ command_uuid, command_type, command_data });
+  console.log(
+    "submitting " + JSON.stringify({ command_uuid, command_type, command_data })
+  );
   try {
     await pool.query("select enqueue_command($1,$2,$3)", [
       command_uuid,
@@ -50,7 +53,9 @@ app.post("/event-apis/submit-command", async (req, res) => {
 
 app.post("/event-apis/fail-command", async (req, res) => {
   const { command_uuid, reason } = req.body;
-  console.log({ command_uuid, reason });
+  console.log(
+    "failing " + JSON.stringify({ command_uuid, reason }, undefined, 2)
+  );
   try {
     await pool.query("select fail_command($1,$2)", [command_uuid, reason]);
     res.status(200).send("ok");
@@ -66,7 +71,10 @@ app.post("/event-apis/fail-command", async (req, res) => {
 
 app.post("/event-apis/succeed-command", async (req, res) => {
   const { command_uuid, event_t, events } = req.body;
-  console.log({ command_uuid, event_t, events });
+  console.log(
+    "succeeding " +
+      JSON.stringify({ command_uuid, event_t, events }, undefined, 2)
+  );
   assert(
     Array.isArray(events) &&
       events.every(

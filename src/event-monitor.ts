@@ -81,12 +81,12 @@ export class EventMonitor {
       }
     }
     while (this.t < t) {
+      this.t += 1;
       const s = this.pollers.get(this.t);
       if (s) {
         this.pollers.delete(this.t);
         this.dequeue_all(this.t, s);
       }
-      this.t += 1;
     }
   }
 
