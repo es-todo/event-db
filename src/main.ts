@@ -164,13 +164,17 @@ app.get("/event-apis/get-events", async (req, res) => {
 class CommandQueue {
   private queue_t: number | undefined = undefined;
   private queue_t_waiters: Set<(queue_t: number) => void> = new Set();
-  private queue_t_pollers: Map<number, Set<() => void>> = new Map();
+  private queue_t_pollers: Map<
+    number,
+    Set<(message: command_message) => void>
+  > = new Map();
 
   public add_message(message: command_message) {
-    this.advance_to(message.queue_t);
+    this.advance_to(message);
   }
 
-  public advance_to(queue_t: number) {
+  public advance_to(message: command_message) {
+    const { queue_t } = message;
     if (this.queue_t === undefined) {
       this.queue_t = queue_t;
       this.queue_t_waiters.forEach((f) => f(queue_t));
@@ -181,7 +185,7 @@ class CommandQueue {
     for (const t of this.queue_t_pollers.keys()) {
       if (t <= queue_t) {
         const s = this.queue_t_pollers.get(t);
-        s?.forEach((f) => f());
+        s?.forEach((f) => f(message));
         this.queue_t_pollers.delete(t);
       }
     }
@@ -195,9 +199,9 @@ class CommandQueue {
     }
   }
 
-  public poll_queue(t: number): Promise<void> {
+  public poll_queue(t: number): Promise<command_message> {
     if (this.queue_t && t <= this.queue_t) {
-      return Promise.resolve();
+      return fetch_command_message(t);
     } else {
       return new Promise((resolve) => {
         const s =
@@ -210,6 +214,23 @@ class CommandQueue {
       });
     }
   }
+}
+
+async function fetch_command_message(
+  queue_t: number
+): Promise<command_message> {
+  const data = await pool.query(
+    "select * from command_queue_tracker where queue_t = $1",
+    [queue_t]
+  );
+  console.log(data);
+  const row = data.rows[0];
+  console.log(row);
+  return {
+    queue_t: parseInt(row.queue_t, 10),
+    command_uuid: row.command_uuid,
+    type: row.status,
+  };
 }
 
 const command_queue = new CommandQueue();
@@ -233,7 +254,8 @@ async function init_queue() {
               "select coalesce(max(queue_t), 0) as t from command_queue_tracker"
             );
             const t = parseInt(res.rows[0].t);
-            command_queue.advance_to(t);
+            const message = await fetch_command_message(t);
+            command_queue.advance_to(message);
           } catch (error: any) {
             reject(error);
           }
