@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import pg from "pg";
+import { sleep } from "./sleep.ts";
 
 type events = { type: string; data: any }[];
 
@@ -19,7 +20,7 @@ async function get_events(pool: pool, event_t: number): Promise<events> {
       return events;
     } catch (error) {
       console.error(error);
-      sleep(100);
+      await sleep(100);
     }
   }
 }
@@ -102,7 +103,7 @@ export class EventMonitor {
             this.note_t(parseInt(message.payload));
           });
           try {
-            await conn.query("listen event_stream");
+            await conn.query("listen event");
             const data = await conn.query(
               "select coalesce(max(event_t), 0) as t from event"
             );

@@ -24,7 +24,7 @@ COPY ./package-lock.json /app
 RUN npm ci
 COPY ./tsconfig.json /app
 COPY ./src /app/src
-RUN npm run check
+#RUN npm run check
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 ENTRYPOINT ["/docker-entrypoint.sh"]

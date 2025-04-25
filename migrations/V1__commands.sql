@@ -5,36 +5,6 @@ create table command (
   command_date timestamp without time zone not null default now()
 );
 
-create type command_queue_status as enum ('added', 'removed');
-
-create table command_queue_tracker (
-  queue_t bigint not null primary key,
-  command_uuid uuid not null,
-  status command_queue_status not null,
-  foreign key (command_uuid) references command (command_uuid)
-);
-
-create table command_queue (
-  command_uuid uuid not null primary key,
-  queue_t bigint not null,
-  scheduled_for timestamp without time zone not null default now(),
-  foreign key (command_uuid) references command (command_uuid),
-  foreign key (queue_t) references command_queue_tracker (queue_t),
-  unique (queue_t)
-);
-
-create type command_outcome_type as enum ('succeeded', 'failed', 'aborted');
-
-create table command_outcome (
-  command_outcome_t bigint not null primary key,
-  command_uuid uuid not null,
-  command_outcome_date timestamp without time zone not null default now(),
-  outcome command_outcome_type not null,
-  reason text null,
-  foreign key (command_uuid) references command (command_uuid),
-  unique (command_uuid)
-);
-
 create table event (
   event_t bigint not null primary key,
   event_date timestamp without time zone not null default now(),
@@ -44,80 +14,75 @@ create table event (
   unique (command_uuid)
 );
 
+create table queue (
+  command_uuid uuid primary key,
+  foreign key (command_uuid) references command (command_uuid)
+);
+
+create type status_type_type as enum ('queued', 'succeeded', 'failed', 'aborted');
+
+create table status (
+  status_t bigint not null primary key,
+  command_uuid uuid not null,
+  status_date timestamp without time zone not null default now(),
+  status_type status_type_type not null,
+  reason text null,
+  foreign key (command_uuid) references command (command_uuid)
+);
+
 create function enqueue_command (command_uuid uuid, command_type text, command_data jsonb)
 returns void as $$
-  declare next_queue_t bigint;
+  declare next_status_t bigint;
   begin
-    next_queue_t := (select coalesce(max(queue_t), 0) from command_queue_tracker) + 1;
+    next_status_t := (select coalesce(max(status_t), 0) from status) + 1;
     insert into command (command_uuid, command_type, command_data)
       values (command_uuid, command_type, command_data);
-    insert into command_queue_tracker (queue_t, command_uuid, status)
-      values (next_queue_t, command_uuid, 'added');
-    insert into command_queue (queue_t, command_uuid)
-      values (next_queue_t, command_uuid);
-    perform pg_notify('command_stream', concat(next_queue_t, ':queued:', command_uuid));
+    insert into queue (command_uuid) values (command_uuid);
+    insert into status (status_t, command_uuid, status_type)
+      values (next_status_t, command_uuid, 'queued');
+    perform pg_notify('status', concat(next_status_t, ':queued:', command_uuid));
   end;
 $$ language plpgsql;
 
-create function fail_command (failed_command_uuid uuid, failed_reason text)
+create function fail_command (failed_command_uuid uuid, fail_reason text)
 returns void as $$
-  declare next_queue_t bigint;
+  declare next_status_t bigint;
   begin
-    insert into command_outcome (command_outcome_t, command_uuid, outcome, reason) 
-      values (
-        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
-        failed_command_uuid,
-        'failed',
-        failed_reason
-      );
-    delete from command_queue T where T.command_uuid = failed_command_uuid;
-    next_queue_t := (select coalesce(max(queue_t), 0) from command_queue_tracker) + 1;
-    insert into command_queue_tracker (queue_t, command_uuid, status)
-      values (next_queue_t, failed_command_uuid, 'removed');
-    perform pg_notify('command_stream', concat(next_queue_t, ':failed:', failed_command_uuid));
+    next_status_t := (select coalesce(max(status_t), 0) from status) + 1;
+    delete from queue where command_uuid = failed_command_uuid;
+    insert into status (status_t, command_uuid, status_type, reason)
+      values (next_status_t, failed_command_uuid, 'failed', fail_reason);
+    perform pg_notify('status', concat(next_status_t, ':failed:', failed_command_uuid));
   end;
 $$ language plpgsql;
 
-create function abort_command (command_uuid uuid, reason text)
+create function abort_command (aborted_command_uuid uuid, abort_reason text)
 returns void as $$
-  declare next_queue_t bigint;
+  declare next_status_t bigint;
   begin
-    insert into command_outcome (command_outcome_t, command_uuid, outcome, reason) 
-      values (
-        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
-        command_uuid, 
-        'failed',
-        reason
-      );
-    delete from command_queue T where T.command_uuid = command_uuid;
-    next_queue_t := (select coalesce(max(queue_t), 0) from command_queue_tracker) + 1;
-    insert into command_queue_tracker (queue_t, command_uuid, status)
-      values (next_queue_t, command_uuid, 'removed');
-    perform pg_notify('command_stream', concat(next_queue_t, ':aborted:', command_uuid));
+    next_status_t := (select coalesce(max(status_t), 0) from status) + 1;
+    delete from queue where command_uuid = aborted_command_uuid;
+    insert into status (status_t, command_uuid, status_type, reason)
+      values (next_status_t, aborted_command_uuid, 'aborted', abort_reason);
+    perform pg_notify('status', concat(next_status_t, ':aborted:', aborted_command_uuid));
   end;
 $$ language plpgsql;
 
 create function succeed_command (this_command_uuid uuid, this_event_t bigint, this_event_data text)
 returns void as $$
-  declare next_queue_t bigint;
+  declare next_status_t bigint;
   begin
+    next_status_t := (select coalesce(max(status_t), 0) from status) + 1;
     if this_event_t != coalesce((select max(event_t) from event), 0) + 1 then
       raise exception 'invalid_event_t';
     end if;
-    insert into command_outcome (command_outcome_t, command_uuid, outcome)
-      values (
-        coalesce((select max(command_outcome_t) from command_outcome), 0) + 1, 
-        this_command_uuid,
-        'succeeded'
-      );
-    delete from command_queue where command_uuid = this_command_uuid;
-    next_queue_t := (select coalesce(max(queue_t), 0) from command_queue_tracker) + 1;
-    insert into command_queue_tracker (queue_t, command_uuid, status)
-      values (next_queue_t, this_command_uuid, 'removed');
-    perform pg_notify('command_stream', concat(next_queue_t, ':succeeded:', this_command_uuid));
+    delete from queue where command_uuid = this_command_uuid;
+    insert into status (status_t, command_uuid, status_type)
+      values (next_status_t, this_command_uuid, 'succeeded');
+    perform pg_notify('status', concat(next_status_t, ':succeeded:', this_command_uuid));
     insert into event (event_t, event_data, command_uuid)
       values (this_event_t, this_event_data::jsonb, this_command_uuid);
-    perform pg_notify('event_stream', this_event_t::text);
+    perform pg_notify('event', this_event_t::text);
   end;
 $$ language plpgsql;
 

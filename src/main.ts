@@ -108,7 +108,7 @@ app.post("/event-apis/succeed-command", async (req, res) => {
 app.get("/event-apis/pending-commands", async (_req, res) => {
   try {
     const outcome = await pool.query(
-      "select * from command_queue join command on command_queue.command_uuid = command.command_uuid"
+      "select * from queue join command on queue.command_uuid = command.command_uuid"
     );
     res.status(200).json(outcome.rows);
   } catch (error: any) {
@@ -119,21 +119,21 @@ app.get("/event-apis/pending-commands", async (_req, res) => {
 
 type command_message = {
   type: "queued" | "succeeded" | "failed" | "aborted";
-  queue_t: number;
+  status_t: number;
   command_uuid: string;
 };
 
 function parse_command_payload(payload: string): command_message {
   const m = payload.split(":");
   if (m.length !== 3) throw new Error(`invalid payload ${payload}`);
-  const [queue_t, type, command_uuid] = m;
+  const [status_t, type, command_uuid] = m;
   if (
     type === "queued" ||
     type === "succeeded" ||
     type === "failed" ||
     type === "aborted"
   ) {
-    return { queue_t: parseInt(queue_t), type, command_uuid };
+    return { status_t: parseInt(status_t), type, command_uuid };
   } else {
     throw new Error(`invalid payload ${payload}`);
   }
@@ -162,9 +162,9 @@ app.get("/event-apis/get-events", async (req, res) => {
 });
 
 class CommandQueue {
-  private queue_t: number | undefined = undefined;
-  private queue_t_waiters: Set<(queue_t: number) => void> = new Set();
-  private queue_t_pollers: Map<
+  private status_t: number | undefined = undefined;
+  private status_t_waiters: Set<(status_t: number) => void> = new Set();
+  private status_t_pollers: Map<
     number,
     Set<(message: command_message) => void>
   > = new Map();
@@ -174,40 +174,47 @@ class CommandQueue {
   }
 
   public advance_to(message: command_message) {
-    const { queue_t } = message;
-    if (this.queue_t === undefined) {
-      this.queue_t = queue_t;
-      this.queue_t_waiters.forEach((f) => f(queue_t));
-      this.queue_t_waiters.clear();
-    } else if (queue_t > this.queue_t) {
-      this.queue_t = queue_t;
+    const { status_t } = message;
+    if (this.status_t === undefined) {
+      this.status_t = status_t;
+      this.status_t_waiters.forEach((f) => f(status_t));
+      this.status_t_waiters.clear();
+    } else if (status_t > this.status_t) {
+      this.status_t = status_t;
     }
-    for (const t of this.queue_t_pollers.keys()) {
-      if (t <= queue_t) {
-        const s = this.queue_t_pollers.get(t);
+    for (const t of this.status_t_pollers.keys()) {
+      if (t <= status_t) {
+        const s = this.status_t_pollers.get(t);
         s?.forEach((f) => f(message));
-        this.queue_t_pollers.delete(t);
+        this.status_t_pollers.delete(t);
       }
     }
   }
 
-  public get_queue_t(): Promise<number> {
-    if (this.queue_t === undefined) {
-      return new Promise((resolve) => this.queue_t_waiters.add(resolve));
+  public init_empty() {
+    assert(this.status_t === undefined);
+    this.status_t = 0;
+    this.status_t_waiters.forEach((f) => f(0));
+    this.status_t_waiters.clear();
+  }
+
+  public get_status_t(): Promise<number> {
+    if (this.status_t === undefined) {
+      return new Promise((resolve) => this.status_t_waiters.add(resolve));
     } else {
-      return Promise.resolve(this.queue_t);
+      return Promise.resolve(this.status_t);
     }
   }
 
   public poll_queue(t: number): Promise<command_message> {
-    if (this.queue_t && t <= this.queue_t) {
+    if (this.status_t && t <= this.status_t) {
       return fetch_command_message(t);
     } else {
       return new Promise((resolve) => {
         const s =
-          this.queue_t_pollers.get(t) ??
+          this.status_t_pollers.get(t) ??
           ((s: Set<() => void>) => {
-            this.queue_t_pollers.set(t, s);
+            this.status_t_pollers.set(t, s);
             return s;
           })(new Set());
         s.add(resolve);
@@ -217,19 +224,18 @@ class CommandQueue {
 }
 
 async function fetch_command_message(
-  queue_t: number
+  status_t: number
 ): Promise<command_message> {
-  const data = await pool.query(
-    "select * from command_queue_tracker where queue_t = $1",
-    [queue_t]
-  );
+  const data = await pool.query("select * from status where status_t = $1", [
+    status_t,
+  ]);
   console.log(data);
   const row = data.rows[0];
   console.log(row);
   return {
-    queue_t: parseInt(row.queue_t, 10),
+    status_t: parseInt(row.status_t, 10),
     command_uuid: row.command_uuid,
-    type: row.status,
+    type: row.status_type,
   };
 }
 
@@ -246,16 +252,21 @@ async function init_queue() {
           conn.on("notification", ({ payload }) => {
             if (!payload) return reject(new Error("no payload"));
             const message = parse_command_payload(payload);
+            console.log(message);
             command_queue.add_message(message);
           });
           try {
-            await conn.query("listen command_stream");
+            await conn.query("listen status");
             const res = await conn.query(
-              "select coalesce(max(queue_t), 0) as t from command_queue_tracker"
+              "select coalesce(max(status_t), 0) as t from status"
             );
             const t = parseInt(res.rows[0].t);
-            const message = await fetch_command_message(t);
-            command_queue.advance_to(message);
+            if (t > 0) {
+              const message = await fetch_command_message(t);
+              command_queue.advance_to(message);
+            } else {
+              command_queue.init_empty();
+            }
           } catch (error: any) {
             reject(error);
           }
@@ -273,8 +284,8 @@ async function init_queue() {
   }
 }
 
-app.get("/event-apis/queue-t", async (_req, res) => {
-  res.status(200).json(await command_queue.get_queue_t());
+app.get("/event-apis/status-t", async (_req, res) => {
+  res.status(200).json(await command_queue.get_status_t());
 });
 
 function int_param(x: any) {
@@ -290,13 +301,13 @@ function int_param(x: any) {
   }
 }
 
-app.get("/event-apis/poll-command-queue", async (req, res) => {
-  const queue_t = int_param(req.query["queue_t"]);
-  if (queue_t === undefined) {
-    res.status(404).send("invalid queue_t");
+app.get("/event-apis/poll-status", async (req, res) => {
+  const status_t = int_param(req.query["status_t"]);
+  if (status_t === undefined) {
+    res.status(404).send("invalid status_t");
     return;
   }
-  res.status(200).json(await command_queue.poll_queue(queue_t));
+  res.status(200).json(await command_queue.poll_queue(status_t));
 });
 
 app.get("/event-apis/recent-events", async (req, res) => {
