@@ -30,15 +30,17 @@ app.get("/", async (_req, res) => {
 });
 
 app.post("/event-apis/submit-command", async (req, res) => {
-  const { command_uuid, command_type, command_data } = req.body;
+  const { command_uuid, command_type, command_data, command_auth } = req.body;
   console.log(
-    "submitting " + JSON.stringify({ command_uuid, command_type, command_data })
+    "submitting " +
+      JSON.stringify({ command_uuid, command_type, command_data, command_auth })
   );
   try {
-    await pool.query("select enqueue_command($1,$2,$3)", [
+    await pool.query("select enqueue_command($1,$2,$3,$4)", [
       command_uuid,
       command_type,
       command_data,
+      command_auth,
     ]);
     res.status(200).send("ok");
   } catch (error: any) {
@@ -229,7 +231,6 @@ async function fetch_command_message(
   const data = await pool.query("select * from status where status_t = $1", [
     status_t,
   ]);
-  console.log(data);
   const row = data.rows[0];
   console.log(row);
   return {
@@ -252,7 +253,7 @@ async function init_queue() {
           conn.on("notification", ({ payload }) => {
             if (!payload) return reject(new Error("no payload"));
             const message = parse_command_payload(payload);
-            console.log(message);
+            //console.log(message);
             command_queue.add_message(message);
           });
           try {

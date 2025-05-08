@@ -2,7 +2,8 @@ create table command (
   command_uuid uuid primary key,
   command_type text not null,
   command_data jsonb not null,
-  command_date timestamp without time zone not null default now()
+  command_date timestamp without time zone not null default now(),
+  command_auth jsonb not null
 );
 
 create table event (
@@ -30,13 +31,13 @@ create table status (
   foreign key (command_uuid) references command (command_uuid)
 );
 
-create function enqueue_command (command_uuid uuid, command_type text, command_data jsonb)
+create function enqueue_command (command_uuid uuid, command_type text, command_data jsonb, command_auth jsonb)
 returns void as $$
   declare next_status_t bigint;
   begin
     next_status_t := (select coalesce(max(status_t), 0) from status) + 1;
-    insert into command (command_uuid, command_type, command_data)
-      values (command_uuid, command_type, command_data);
+    insert into command (command_uuid, command_type, command_data, command_auth)
+      values (command_uuid, command_type, command_data, command_auth);
     insert into queue (command_uuid) values (command_uuid);
     insert into status (status_t, command_uuid, status_type)
       values (next_status_t, command_uuid, 'queued');

@@ -1,4 +1,6 @@
 #!/bin/bash 
+set -e;
+
 echo "Hello World!"
 
 function do_exit() {
