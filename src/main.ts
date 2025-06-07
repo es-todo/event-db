@@ -289,6 +289,51 @@ app.get("/event-apis/status-t", async (_req, res) => {
   res.status(200).json(await command_queue.get_status_t());
 });
 
+app.get("/event-apis/command-status", async (req, res) => {
+  const command_uuid = req.query["command_uuid"];
+  if (typeof command_uuid !== "string") {
+    res.status(401).send("invalid command_uuid");
+    return;
+  }
+  try {
+    const out = await pool.query(
+      `select status_t, status_date, status_type, reason
+         from status
+         where command_uuid = $1
+         order by status_t`,
+      [command_uuid]
+    );
+    res
+      .status(200)
+      .json(out.rows.map((x) => ({ ...x, status_t: parseInt(x.status_t) })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(`failed to fetch command status`);
+  }
+});
+
+app.get("/event-apis/successful-command-event-t", async (req, res) => {
+  const command_uuid = req.query["command_uuid"];
+  if (typeof command_uuid !== "string") {
+    res.status(401).send("invalid command_uuid");
+    return;
+  }
+  try {
+    const out = await pool.query(
+      `select event_t from event where command_uuid = $1`,
+      [command_uuid]
+    );
+    if (out.rows.length === 0) {
+      res.status(404).send("not found");
+    } else {
+      res.status(200).json(parseInt(out.rows[0]["event_t"]));
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).send(`failed to fetch command status`);
+  }
+});
+
 function int_param(x: any) {
   const str = typeof x === "string" ? x : "";
   if (str.match(/^\d+$/)) {
