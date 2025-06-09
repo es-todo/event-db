@@ -1,0 +1,43 @@
+name: Build & Push Docker to GHCR
+
+# 1) Give GitHub Token the ability to push packages
+permissions:
+  contents: read
+  packages: write
+
+on:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 2) Checkout your source code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Sanitize tag
+        run: |
+          echo "SANITIZED_TAG=${GITHUB_REF_NAME//\//-}" >> $GITHUB_ENV
+
+      # 3) Log in to GHCR
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 4) Build & push
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .                        # Path to your Dockerfile (root of repo)
+          file: ./Dockerfile               # Adjust if your Dockerfile is elsewhere
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ env.SANITIZED_TAG }}
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
